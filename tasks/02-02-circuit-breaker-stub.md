@@ -8,107 +8,53 @@
 
 - `src/llm/circuit-breaker.ts`
 
-## 实现内容
+## 实现要点
 
-完整实现一个 always-pass 的最小版本，带 30+ 行设计注释说明完整算法。
+### 当前行为（MVP）
 
-```typescript
-/**
- * 熔断器 — MVP Stub 实现
- *
- * ## 为什么需要熔断器？
- * 当外部 API（DeepSeek/Qwen）不可用时，快速失败比长时间等待更有利于用户体验。
- * 熔断器防止级联故障——如果 API 已经连续失败，后续请求直接拒绝而不等待超时。
- *
- * ## 核心算法：三态状态机
- *
- *                    ┌──────────────────────────┐
- *                    │                          │
- *    连续失败≥阈值    ▼                          │
- *   ┌──────┐  failureThreshold=5  ┌──────┐     │
- *   │CLOSED│ ─────────────────────▶│ OPEN  │     │
- *   │(正常)│                      │(熔断) │     │
- *   └──┬───┘                      └───┬───┘     │
- *      │         探测成功              │         │
- *      │  ┌──────────────────────────┘         │
- *      ▼  │    recoveryTimeout=30s             │
- *   ┌──────┴───┐                               │
- *   │HALF_OPEN │                               │
- *   │ (探测)    │───────────────────────────────┘
- *   └──────────┘         探测失败
- *
- * 参数建议：
- * - failureThreshold = 5     // 连续失败 5 次触发熔断
- * - recoveryTimeout = 30000  // 30 秒后尝试恢复
- *
- * ## MVP → 生产的关键变化
- * - 当前：永远 CLOSED，所有请求直接放行
- * - 生产：每 LLM API 独立实例，基于状态机控制
- * - Node.js 生态建议用 opossum 库（https://github.com/nodeshift/opossum）
- *
- * ## 集成方式（装饰器模式，不侵入 LLMClient）
- * ```typescript
- * const breaker = new CircuitBreaker({ failureThreshold: 5, recoveryTimeout: 30000 });
- * const result = await breaker.call(() => llmClient.chat(messages, tools));
- * ```
- * LLM 客户端不感知熔断逻辑，调用方透明。
- *
- * ## 降级策略（熔断时）
- * - 如有备用模型（Qwen）：自动切换
- * - 如无备用模型：返回友好错误提示，不阻塞整个请求
- */
+`CircuitBreaker.call(fn)` 直接执行 fn 并返回结果，不做任何熔断判断。类包含完整的状态管理字段（state、failures、lastFailureTime），但只在注释中体现逻辑。
 
-export class CircuitBreaker {
-  private state: "CLOSED" | "OPEN" | "HALF_OPEN" = "CLOSED";
-  private failures = 0;
-  private readonly failureThreshold: number;
-  private readonly recoveryTimeout: number;
+### 设计注释中描述的核心算法
 
-  constructor(options: { failureThreshold?: number; recoveryTimeout?: number } = {}) {
-    this.failureThreshold = options.failureThreshold ?? 5;
-    this.recoveryTimeout = options.recoveryTimeout ?? 30000;
-  }
+**三态状态机**：
 
-  /**
-   * 执行受熔断器保护的异步操作
-   *
-   * MVP: 永远直接执行，不进行熔断判断。
-   * EXTEND: 根据状态机决定是否执行或直接拒绝。
-   */
-  async call<T>(fn: () => Promise<T>): Promise<T> {
-    // MVP: 直接放行
-    return fn();
-
-    // EXTEND: 实现完整状态机
-    // if (this.state === "OPEN") {
-    //   if (Date.now() - this.lastFailureTime > this.recoveryTimeout) {
-    //     this.state = "HALF_OPEN";
-    //   } else {
-    //     throw new Error("Circuit breaker is OPEN");
-    //   }
-    // }
-    // try {
-    //   const result = await fn();
-    //   this.onSuccess();
-    //   return result;
-    // } catch (error) {
-    //   this.onFailure();
-    //   throw error;
-    // }
-  }
-
-  private onSuccess(): void {
-    // EXTEND: this.failures = 0; this.state = "CLOSED";
-  }
-
-  private onFailure(): void {
-    // EXTEND: this.failures++; if (this.failures >= this.failureThreshold) this.state = "OPEN";
-  }
-}
 ```
+CLOSED（正常）
+  │ 连续失败次数 ≥ failureThreshold(5)
+  ▼
+OPEN（熔断，拒绝所有请求）
+  │ 等待 recoveryTimeout(30s)
+  ▼
+HALF_OPEN（探测，允许少量请求试探）
+  │ 试探成功 → CLOSED
+  │ 试探失败 → OPEN
+```
+
+**集成方式**：装饰器模式
+
+```
+breaker.call(() => llmClient.chat(messages, tools))
+```
+
+LLMClient 不感知熔断，调用方通过 breaker 包装即可获得熔断保护。
+
+### 生产就绪建议
+
+- Node.js 生态推荐使用 `opossum` 库（成熟、经过大规模验证）
+- 每个外部 API 独立断路器实例（DeepSeek 和 Qwen 分别熔断）
+- 熔断时降级策略：自动切换到备用模型；无备用则返回友好错误
+
+### 注释结构
+
+文件中以 30+ 行注释覆盖：
+1. 为什么需要熔断器（防级联故障、快速失败优于长时间等待）
+2. ASCII 状态机图 + 参数建议
+3. 装饰器模式集成示例
+4. MVP→生产的关键变化
+5. 降级策略（备用模型切换 / 友好报错）
 
 ## 验收标准
 
-- [ ] 类可实例化，call() 方法能正常执行传入的函数
-- [ ] 设计注释中状态机转换逻辑描述清晰
-- [ ] 注释中包含生产环境建议（opossum 库引用）
+- [x] 类可实例化，`call()` 方法能正常执行传入的函数
+- [x] 设计注释中状态机逻辑描述清晰
+- [x] 注释中包含 opossum 库推荐

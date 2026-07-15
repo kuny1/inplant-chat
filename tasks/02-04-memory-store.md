@@ -8,112 +8,71 @@
 
 - `src/memory/store.ts`
 
-## 实现内容
+## 实现要点
 
-```typescript
-import { randomUUID } from "crypto";
-import type { Message, Session } from "../types.js";
+### 接口设计
 
-/**
- * 会话存储接口
- *
- * ## 设计意图
- * SessionStore 接口定义了会话和消息的完整 CRUD 操作契约。
- * 方法签名与 PostgreSQL schema 对齐，未来切换数据库时调用方零改动。
- *
- * 对应关系：
- *   sessions 表              → createSession / getSession / deleteSession
- *   messages 表              → addMessage / getMessages
- *   message_embeddings 表    → vectorSearch (预留)
- *
- * ## MVP → 生产：从 MemoryStore 到 PgVectorStore
- * ```typescript
- * // MVP
- * const store = new MemoryStore();
- *
- * // 生产：只需替换实现
- * const pool = new Pool({ connectionString: process.env.DATABASE_URL });
- * const store = new PgVectorStore(pool);
- * ```
- * 调用方代码无需任何改动。
- *
- * ## pgvector 向量检索 SQL（生产设计预览）
- * ```sql
- * SELECT m.content, m.metadata,
- *        1 - (me.embedding <=> $1) AS similarity
- * FROM message_embeddings me
- * JOIN messages m ON m.id = me.message_id
- * WHERE m.session_id = $2
- *   AND 1 - (me.embedding <=> $1) > 0.7
- * ORDER BY similarity DESC
- * LIMIT $3;
- * ```
- * `<=>` 是 pgvector 的余弦距离运算符。
- */
-export interface SessionStore {
-  createSession(userId?: string): Session;
-  getSession(id: string): Session | undefined;
-  addMessage(sessionId: string, message: Message): void;
-  getMessages(sessionId: string): Message[];
-  deleteSession(id: string): void;
+`SessionStore` 接口定义 5 个核心方法 + 2 个预留扩展：
 
-  /** EXTEND: 语义检索历史消息 */
-  // vectorSearch(sessionId: string, embedding: number[], topK: number): Promise<Array<{ message: Message; score: number }>>;
+```
+interface SessionStore {
+  createSession(userId?) → Session        // 创建新会话，自动生成 UUID
+  getSession(id) → Session | undefined    // 按 ID 获取
+  addMessage(sessionId, message) → void   // 追加消息
+  getMessages(sessionId) → Message[]      // 获取消息列表
+  deleteSession(id) → void               // 删除会话
 
-  /** EXTEND: 上下文压缩，将早期消息摘要化 */
-  // summarizeAndCompress(sessionId: string): Promise<string>;
-}
+  // EXTEND: 语义检索历史（对应 pgvector message_embeddings 表）
+  // vectorSearch(sessionId, embedding, topK) → Array<{message, score}>
 
-/**
- * 内存实现
- * 使用 Map 存储会话，适合 MVP 单进程场景。
- */
-export class MemoryStore implements SessionStore {
-  private sessions = new Map<string, Session>();
-
-  createSession(userId?: string): Session {
-    const session: Session = {
-      id: randomUUID(),
-      userId,
-      title: "新会话",
-      messages: [],
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    this.sessions.set(session.id, session);
-    return session;
-  }
-
-  getSession(id: string): Session | undefined {
-    return this.sessions.get(id);
-  }
-
-  addMessage(sessionId: string, message: Message): void {
-    const session = this.sessions.get(sessionId);
-    if (!session) throw new Error(`会话 ${sessionId} 不存在`);
-    session.messages.push(message);
-    session.updatedAt = new Date();
-
-    // 自动标题：取第一条用户消息的前 30 字
-    if (session.title === "新会话" && message.role === "user") {
-      session.title = message.content.slice(0, 30) + (message.content.length > 30 ? "..." : "");
-    }
-  }
-
-  getMessages(sessionId: string): Message[] {
-    const session = this.sessions.get(sessionId);
-    return session?.messages ?? [];
-  }
-
-  deleteSession(id: string): void {
-    this.sessions.delete(id);
-  }
+  // EXTEND: 上下文压缩（早期消息→结构化摘要）
+  // summarizeAndCompress(sessionId) → string
 }
 ```
 
+### 方法签名与 PostgreSQL schema 的对应
+
+| 接口方法 | SQL 操作 | 对应表 |
+|---------|---------|--------|
+| `createSession` | `INSERT INTO sessions` | sessions |
+| `getSession` | `SELECT * FROM sessions WHERE id = $1` | sessions |
+| `addMessage` | `INSERT INTO messages` | messages |
+| `getMessages` | `SELECT * FROM messages WHERE session_id = $1 ORDER BY created_at` | messages |
+| `deleteSession` | `DELETE FROM sessions WHERE id = $1` (CASCADE) | sessions + messages |
+
+这种对齐意味着未来从 `MemoryStore` 切换到 `PgVectorStore` 时，调用方代码零改动。
+
+### MemoryStore 实现细节
+
+- 用 `Map<string, Session>` 存储，O(1) 查找
+- `createSession`：`randomUUID()` 生成 ID，初始标题为"新会话"
+- `addMessage`：追加到 `session.messages[]` + 自动标题（取首条用户消息前 30 字）
+- `getMessages`：限制返回最近 10 条（`maxContextMessages`），超出部分截断——这是简化版的上下文管理，注释标明完整方案应返回摘要+最近消息
+- `deleteSession`：Map.delete，进程重启后数据丢失（MVP 可接受）
+
+### pgvector 迁移预览
+
+注释中包含完整的生产 SQL 示例：
+
+```sql
+SELECT m.content, 1 - (me.embedding <=> $1) AS similarity
+FROM message_embeddings me
+JOIN messages m ON m.id = me.message_id
+WHERE m.session_id = $2
+  AND 1 - (me.embedding <=> $1) > 0.7
+ORDER BY similarity DESC LIMIT $3;
+```
+
+其中 `<=>` 是 pgvector 的余弦距离运算符，`1 - distance = similarity`。
+
+### 设计决策
+
+- **为什么没有 `listSessions` 方法？** MVP 只有 demo 场景，不需要会话列表管理；接口先精简，需要时再加
+- **为什么 `getMessages` 要截断而不是全部返回？** 模拟上下文窗口管理，防止单次请求塞入过长历史导致 LLM 输入超限
+
 ## 验收标准
 
-- [ ] 支持会话和消息的完整 CRUD
-- [ ] 接口设计预留了 vectorSearch 和 summarizeAndCompress 方法签名
-- [ ] 注释中包含 pgvector SQL 设计预览
-- [ ] 自动取首条用户消息前 30 字作为会话标题
+- [x] 支持会话和消息 CRUD
+- [x] 自动取首条用户消息前 30 字作为会话标题
+- [x] 接口预留 vectorSearch 和 summarizeAndCompress 方法签名
+- [x] 注释包含 pgvector SQL 设计预览
