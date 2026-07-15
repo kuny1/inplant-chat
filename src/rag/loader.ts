@@ -8,7 +8,7 @@ export interface Chunk {
   documentId: string;
   content: string;
   index: number;
-  embedding?: number[]; // 由 embedder 后续填充
+  // EXTEND: 未来切换到 embedding 检索时，由 embedder 填充此字段
 }
 
 export interface Document {
@@ -126,7 +126,7 @@ function splitIntoChunks(documentId: string, content: string): Chunk[] {
  * 1. 遍历目录，过滤 .md 文件
  * 2. 逐文件读取并解析 frontmatter
  * 3. 按 ## 标题 + 段落分块
- * 4. 返回 Document[]，其中 chunk.embedding 暂为空，由 embedder 后续填充
+ * 4. 返回 Document[]，供 retriever 进行关键词检索
  */
 export function loadDocuments(dir: string): Document[] {
   const files = readdirSync(dir).filter((f) => extname(f) === ".md");

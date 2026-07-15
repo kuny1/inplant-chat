@@ -1,7 +1,6 @@
 import { config } from "./config.js";
 import { createLLMClient } from "./llm/client.js";
 import { loadDocuments } from "./rag/loader.js";
-import { embedDocuments } from "./rag/embedder.js";
 import { MemoryStore } from "./memory/store.js";
 import { ToolRegistry } from "./tools/registry.js";
 import { KnowledgeTool } from "./tools/knowledge.js";
@@ -22,18 +21,15 @@ async function main() {
   const llm = createLLMClient();
   console.log("✓ LLM 客户端已初始化");
 
-  // 2. 加载并向量化文档
+  // 2. 加载文档
   const docsDir = join(__dirname, "..", "data", "documents");
   const documents = loadDocuments(docsDir);
-  console.log(`✓ 已加载 ${documents.length} 篇文档`);
-
   const chunkCount = documents.reduce((sum, d) => sum + d.chunks.length, 0);
-  await embedDocuments(documents, llm);
-  console.log(`✓ 文档向量化完成（${chunkCount} 个块）`);
+  console.log(`✓ 已加载 ${documents.length} 篇文档（${chunkCount} 个块）`);
 
   // 3. 工具注册
   const registry = new ToolRegistry();
-  registry.register(new KnowledgeTool(documents, llm));
+  registry.register(new KnowledgeTool(documents));
   registry.register(new SensorTool(join(__dirname, "..", "data")));
   console.log(
     `✓ 已注册 ${registry.list().length} 个工具: ${registry.list().join(", ")}`

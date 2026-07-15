@@ -1,6 +1,5 @@
 import { BaseTool } from "./registry.js";
 import type { Document } from "../rag/loader.js";
-import type { LLMClient } from "../llm/client.js";
 import { retrieve } from "../rag/retriever.js";
 import type { ToolResult } from "../types.js";
 
@@ -41,10 +40,7 @@ export class KnowledgeTool extends BaseTool {
     required: ["question"],
   };
 
-  constructor(
-    private documents: Document[],
-    private llm: LLMClient
-  ) {
+  constructor(private documents: Document[]) {
     super();
   }
 
@@ -52,9 +48,7 @@ export class KnowledgeTool extends BaseTool {
     const question = args.question as string;
     const topK = Math.min((args.topK as number) || 3, 5);
 
-    const results = await retrieve(question, this.documents, this.llm, {
-      topK,
-    });
+    const results = retrieve(question, this.documents, { topK });
 
     const formatted = results.map((r) => ({
       content: r.chunk.content,

@@ -11,8 +11,6 @@ export const config = {
     apiKey: process.env.DEEPSEEK_API_KEY || "",
     baseURL: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
     model: process.env.DEEPSEEK_MODEL || "deepseek-chat",
-    /** DeepSeek 兼容 OpenAI embedding 接口 */
-    embeddingModel: "text-embedding-3-small",
   },
 
   // 预留：未来支持多模型切换

@@ -4,9 +4,9 @@
   "type": "module",
   "description": "仿 InPlant ChatBA 的智能问答 Agent，聚焦聚合反应釜设备",
   "scripts": {
-    "dev": "tsx watch src/main.ts",
+    "dev": "tsx watch --env-file=.env src/main.ts",
     "build": "tsc",
-    "start": "node dist/main.js"
+    "start": "node --env-file=.env dist/main.js"
   },
   "dependencies": {
     "fastify": "^5.3.2",

@@ -44,7 +44,6 @@ export interface LLMClient {
     messages: ChatMessage[],
     tools?: ToolDefinition[]
   ): Promise<AssistantMessage>;
-  embed(texts: string[]): Promise<number[][]>;
 }
 
 // ---- DeepSeek Client ----
@@ -107,22 +106,6 @@ export class DeepSeekClient implements LLMClient {
     }
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
-    try {
-      const response = await this.client.embeddings.create({
-        model: config.deepseek.embeddingModel,
-        input: texts,
-      });
-
-      return response.data.map((d) => d.embedding);
-    } catch (error) {
-      if (error instanceof Error && "status" in error) {
-        const apiErr = error as { status: number; message: string };
-        throw new LLMAPIError(apiErr.status, `Embedding 失败: ${apiErr.message}`);
-      }
-      throw new LLMAPIError(500, `Embedding 调用异常: ${String(error)}`);
-    }
-  }
 }
 
 // ---- Factory ----
