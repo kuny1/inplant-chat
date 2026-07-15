@@ -20,12 +20,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export async function createApp() {
   const app = Fastify({ logger: true });
 
-  // CORS：开发阶段允许所有来源
+  // CORS：开发阶段允许 Vite dev server 跨域
   await app.register(cors, { origin: true });
 
-  // 静态文件：前端 SPA
+  // 静态文件：serve Vite 构建产物（pnpm build:ui 后生成 frontend/dist/）
   await app.register(fastifyStatic, {
-    root: join(__dirname, "..", "frontend"),
+    root: join(__dirname, "..", "frontend", "dist"),
     prefix: "/",
   });
 
