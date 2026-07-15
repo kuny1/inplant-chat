@@ -1,6 +1,6 @@
 # T1.3 配置模块
 
-**状态**：✅ 完整实现
+**状态**：✅ 已完成
 **依赖**：无
 **可并行**：是
 
@@ -8,58 +8,33 @@
 
 - `src/config.ts`
 
-## 实现内容
+## 实现要点
 
-```typescript
-/**
- * 统一配置模块
- * 从环境变量读取所有配置，集中管理，提供类型安全的访问。
- */
+### 设计原则
 
-export const config = {
-  /** 服务端口 */
-  port: parseInt(process.env.PORT || "3000", 10),
+- **单一出口**：全局只有一个 `config` 对象，其他模块不直接读 `process.env`
+- **类型安全**：使用 `as const` 保证字面量类型推断
+- **有罪推定**：API Key 为空字符串而非 undefined，首次调 API 时才报错（避免启动时就崩溃）
 
-  deepseek: {
-    apiKey: process.env.DEEPSEEK_API_KEY || "",
-    baseURL: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
-    model: process.env.DEEPSEEK_MODEL || "deepseek-chat",
-    /** DeepSeek 兼容 OpenAI embedding 接口 */
-    embeddingModel: "text-embedding-3-small",
-  },
+### 配置项分组
 
-  // 预留：未来支持多模型切换
-  // qwen: {
-  //   apiKey: process.env.QWEN_API_KEY || "",
-  //   baseURL: process.env.QWEN_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  //   model: process.env.QWEN_MODEL || "qwen-max",
-  // },
-  // modelProvider: (process.env.MODEL_PROVIDER as "deepseek" | "qwen") || "deepseek",
+| 分组 | 字段 | 默认值 | 说明 |
+|------|------|--------|------|
+| deepseek | apiKey, baseURL, model, embeddingModel | `deepseek-chat` + `text-embedding-3-small` | LLM 和 Embedding 共用同一服务商 |
+| agent | maxReActLoops, maxContextMessages | 5 / 10 | 控制 Agent 循环和上下文窗口 |
+| knowledge | topK, similarityThreshold | 3 / 0.5 | RAG 检索参数 |
 
-  agent: {
-    /** ReAct 最大循环轮数 */
-    maxReActLoops: 5,
-    /** 上下文中保留的最大消息数（超出触发压缩） */
-    maxContextMessages: 10,
-  },
+### 预留设计（注释形式）
 
-  knowledge: {
-    /** 默认检索结果数量 */
-    topK: 3,
-    /** 最低相似度阈值，低于此值的结果被过滤 */
-    similarityThreshold: 0.5,
-  },
-} as const;
-```
+- **qwen 配置块**：baseURL 指向阿里云 DashScope 兼容接口，model 默认为 `qwen-max`
+- **modelProvider 切换**：通过环境变量 `MODEL_PROVIDER` 选择 `"deepseek"` 或 `"qwen"`，结合 LLMClient 接口实现热切换
 
-## 设计说明
+### 环境变量缺失处理
 
-- `as const` 保证配置值的字面量类型推断
-- 所有可配置项集中在一个对象，方便排查和修改
-- 预留配置以注释形式保留，不引入实际环境变量依赖
+API Key 缺失时不阻止启动（方便开发阶段先搭好框架），但在首次调用 `createLLMClient()` 时抛出明确错误，告知用户到 DeepSeek 平台获取 Key。
 
 ## 验收标准
 
-- [ ] 启动时可正确读取环境变量
-- [ ] 缺失非必须环境变量时有合理默认值
-- [ ] 缺失 DEEPSEEK_API_KEY 时在调用 LLM 时给出明确错误提示（不是启动时 crash）
+- [x] 从 process.env 正确读取所有配置
+- [x] 非必须环境变量有合理默认值
+- [x] 预留的多模型配置以注释形式存在

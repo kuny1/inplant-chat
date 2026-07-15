@@ -1,0 +1,92 @@
+[
+  {
+    "id": "T-101",
+    "name": "釜内温度A",
+    "location": "R-101釜体上部",
+    "unit": "°C",
+    "normalRange": [120, 160],
+    "currentValue": 155.2,
+    "updatedAt": "2026-07-15T08:00:00Z"
+  },
+  {
+    "id": "T-102",
+    "name": "釜内温度B",
+    "location": "R-101釜体中部",
+    "unit": "°C",
+    "normalRange": [120, 160],
+    "currentValue": 158.7,
+    "updatedAt": "2026-07-15T08:00:00Z"
+  },
+  {
+    "id": "T-103",
+    "name": "夹套进口温度",
+    "location": "R-101夹套进口",
+    "unit": "°C",
+    "normalRange": [80, 120],
+    "currentValue": 95.3,
+    "updatedAt": "2026-07-15T08:00:00Z"
+  },
+  {
+    "id": "T-104",
+    "name": "夹套出口温度",
+    "location": "R-101夹套出口",
+    "unit": "°C",
+    "normalRange": [85, 125],
+    "currentValue": 102.1,
+    "updatedAt": "2026-07-15T08:00:00Z"
+  },
+  {
+    "id": "P-101",
+    "name": "釜内压力",
+    "location": "R-101釜顶",
+    "unit": "MPa",
+    "normalRange": [0.1, 0.5],
+    "currentValue": 0.32,
+    "updatedAt": "2026-07-15T08:00:00Z"
+  },
+  {
+    "id": "P-102",
+    "name": "夹套压力",
+    "location": "R-101夹套",
+    "unit": "MPa",
+    "normalRange": [0.2, 0.6],
+    "currentValue": 0.45,
+    "updatedAt": "2026-07-15T08:00:00Z"
+  },
+  {
+    "id": "L-101",
+    "name": "釜内液位",
+    "location": "R-101釜体",
+    "unit": "%",
+    "normalRange": [30, 85],
+    "currentValue": 72.5,
+    "updatedAt": "2026-07-15T08:00:00Z"
+  },
+  {
+    "id": "L-102",
+    "name": "缓冲罐液位",
+    "location": "V-101缓冲罐",
+    "unit": "%",
+    "normalRange": [20, 90],
+    "currentValue": 55.0,
+    "updatedAt": "2026-07-15T08:00:00Z"
+  },
+  {
+    "id": "F-101",
+    "name": "冷却水流量",
+    "location": "R-101夹套进口管",
+    "unit": "L/min",
+    "normalRange": [100, 300],
+    "currentValue": 215.8,
+    "updatedAt": "2026-07-15T08:00:00Z"
+  },
+  {
+    "id": "V-101",
+    "name": "搅拌转速",
+    "location": "R-101搅拌电机",
+    "unit": "rpm",
+    "normalRange": [200, 800],
+    "currentValue": 520,
+    "updatedAt": "2026-07-15T08:00:00Z"
+  }
+]

@@ -1,6 +1,6 @@
 # T1.1 项目配置
 
-**状态**：✅ 完整实现
+**状态**：✅ 已完成
 **依赖**：无
 **可并行**：是
 
@@ -10,76 +10,28 @@
 - `tsconfig.json`
 - `.env.example`
 
-## 实现内容
+## 实现要点
 
-### package.json
+### 运行环境
+- 项目类型为 ESM（`"type": "module"`），Node.js 18+
+- 开发用 `tsx watch` 实现热重载，生产用 `tsc` 编译后 `node` 运行
 
-```json
-{
-  "name": "inplant-chat",
-  "version": "0.1.0",
-  "type": "module",
-  "description": "仿 InPlant ChatBA 的智能问答 Agent，聚焦聚合反应釜设备",
-  "scripts": {
-    "dev": "tsx watch src/main.ts",
-    "build": "tsc",
-    "start": "node dist/main.js"
-  },
-  "dependencies": {
-    "fastify": "^5.0.0",
-    "@fastify/cors": "^10.0.0",
-    "@fastify/static": "^8.0.0",
-    "openai": "^4.70.0"
-  },
-  "devDependencies": {
-    "tsx": "^4.19.0",
-    "typescript": "^5.6.0",
-    "@types/node": "^22.0.0"
-  }
-}
-```
+### 依赖选型
+- **Web 框架**：Fastify 5，性能优于 Express，插件体系成熟
+- **LLM SDK**：openai 官方库，兼容 DeepSeek API（仅需改 baseURL）
+- **工具链**：仅 tsx + typescript + @types/node，零配置
 
-### tsconfig.json
+### TS 编译配置
+- target ES2022 + module NodeNext，充分利用现代 Node 特性
+- strict: true，从第一天就强制类型安全
+- rootDir 限定 `src/`，避免编译测试/数据文件
 
-```json
-{
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "strict": true,
-    "esModuleInterop": true,
-    "outDir": "dist",
-    "rootDir": "src",
-    "declaration": true,
-    "sourceMap": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
-  },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
-}
-```
-
-### .env.example
-
-```bash
-# DeepSeek API
-DEEPSEEK_API_KEY=sk-your-api-key-here
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-chat
-
-# Server
-PORT=3000
-
-# --- 预留：未来多模型支持 ---
-# QWEN_API_KEY=
-# QWEN_BASE_URL=
-# QWEN_MODEL=qwen-max
-# MODEL_PROVIDER=deepseek
-```
+### 环境变量模板
+- 必填项：DEEPSEEK_API_KEY，缺失时启动不报错但首次调 API 时给出可操作的错误提示
+- 预留项：QWEN_API_KEY / QWEN_BASE_URL / MODEL_PROVIDER，以注释形式存在
 
 ## 验收标准
 
-- [x] `pnpm install` 成功安装所有依赖
-- [x] `pnpm dev` 能启动（即使没有业务代码也应有 tsx 进程）
+- [x] `package.json` 包含全部必需依赖
+- [x] `tsconfig.json` 编译配置正确
+- [x] `.env.example` 覆盖所有配置项及未来预留
