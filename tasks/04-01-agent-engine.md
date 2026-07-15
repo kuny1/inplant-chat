@@ -71,18 +71,92 @@ async runSync(sessionId, message, history?):
 
 这样 JSON 模式一行调用，SSE 模式继续用 `for await...of`。
 
-### 过程透出设计
+### 中断机制
 
-每步通过 `yield AgentStep` 透出，前端据此渲染：
+通过 `AbortSignal` 支持调用方随时中断 Agent：
 
-| step.type | 含义 | 前端渲染 |
-|-----------|------|---------|
-| `thinking` | LLM 正在推理 | 黄色脉冲动画 → 绿色"分析完成" |
-| `tool_call` | 正在调用工具 | 黄色脉冲 + 工具名 → 绿色"已调用 xxx" |
-| `tool_result` | 工具执行完成 | 绿色"xxx 完成" 或 红色"xxx 失败" |
-| `answer` | 最终回答 | 替换步骤条为回答气泡 |
+```
+run(sessionId, message, history, options?: { signal?: AbortSignal })
+```
 
-所有步骤共用同一个 key（type+name），后续更新只改 dot 颜色不重建 DOM——这是前端 `updateStep()` 的设计前提。
+**检查点分布**：每个 `yield` 之后都先检查 `signal.aborted`。具体位置：
+
+1. 每轮 ReAct 循环开始时（LLM 调用前）
+2. 工具执行前（yield running 之后，Promise.all 之前）
+3. 被中断时：将所有未执行的工具标记为 `error` + "请求已被中断，工具未执行"，最后 yield `answer{status:"error"}` 结束
+
+**调用方示例**：
+
+```
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 30000);  // 30s 超时自动中断
+for await (const step of agent.run(sid, msg, hist, { signal: controller.signal })) {
+  // 渲染 step
+}
+```
+
+**为什么用 AbortSignal 而不是自定义 CancellationToken？**
+- AbortSignal 是 Web 标准，浏览器和 Node.js 通用
+- AbortController 可以被 timeout、用户点击"停止"按钮、fetch 超时等多个来源触发
+- 不需要引入额外抽象，调用方已经熟悉这个 API
+
+### 工具并行执行
+
+同一轮 LLM 返回的多个 tool_calls 默认无依赖（不同工具查询不同数据源），应用 `Promise.all` 并发：
+
+```
+// yield 所有 tool_call { status: "running" } — 通知前端 N 个工具开始执行
+// signal 检查 — 如果已中断，标记剩余工具为 error，结束
+// results = Promise.all(toolCalls.map(tc => registry.execute(tc.name, tc.args)))
+// yield 每个 tool_result { status: "completed"|"error" }
+```
+
+**为什么不是串行 for-of？** 当 LLM 同时调 `knowledge_query("温度异常")` 和 `sensor_query({pointId:"T-101"})` 时，两个工具查询的是不同数据源，串行白白浪费等待时间。并发执行将这一步的延迟从 `sum(各工具耗时)` 降为 `max(各工具耗时)`。
+
+**如果将来出现有依赖的工具链怎么办？** 当前 MVP 场景不存在这个需求。当引入 Plan-and-Execute 模式时，编排器会按依赖关系分组，组内并行、组间串行。
+
+### 异常循环降级
+
+达到 maxLoops 仍未得出最终回答时，**显式说明这是降级**，不静默继续：
+
+```
+// 不直接调 LLM 强制回答，先 yield 一个说明步骤：
+yield {
+  type: "thinking",
+  status: "completed",
+  content: "推理轮数已达上限（5轮），基于已有信息生成降级回答。如需更完整的分析，请尝试更具体地描述问题。"
+}
+
+// 强制回答 prompt 中说明当前处境，让 LLM 基于已有信息尽力回答
+messages.push({
+  role: "user",
+  content: "你已经进行了多轮工具调用和推理。请基于目前已获取的全部信息，" +
+           "用中文给出你当前能做出的最佳分析和建议。" +
+           "如果某些方面信息不足无法判断，请明确说明局限性，不要编造。"
+})
+
+// 最终回答标注为降级：
+yield {
+  type: "answer",
+  status: "degraded",  // 不是 "completed"
+  content: answer + "\n\n---\n⚡ 以上回答为降级结果：推理轮数超过限制..."
+}
+```
+
+**前端渲染差异**：`status: "degraded"` 渲染为橙色边框，区别于正常 `completed` 的绿色边框。
+
+### 过程透出完整矩阵
+
+| step.type | step.status | 含义 | 前端渲染 |
+|-----------|-------------|------|---------|
+| `thinking` | `running` | LLM 推理中 | 黄色脉冲动画 |
+| `thinking` | `completed` | 推理完成 | 绿色"分析完成" |
+| `tool_call` | `running` | 工具执行中 | 黄色脉冲 + 工具名 |
+| `tool_result` | `completed` | 工具正常返回 | 绿色"xxx 完成" |
+| `tool_result` | `error` | 工具执行失败 | 红色"xxx 失败" |
+| `answer` | `completed` | 正常回答 | 绿色边框回答气泡 |
+| `answer` | `degraded` | 降级回答（超轮数） | 橙色边框 + ⚡ 提示 |
+| `answer` | `error` | 中断/异常 | 红色边框 + 错误信息 |
 
 ### 扩展点（注释预留）
 
@@ -109,6 +183,7 @@ class PlanExecuteOrchestrator implements Orchestrator  // 未来
 ## 验收标准
 
 - [x] ReAct 循环：Think → ToolCall → Observe → Answer
-- [x] 工具执行过程通过 yield 透出
-- [x] 达到 maxLoops 时强制生成回答
+- [x] 中断机制：signal.aborted 检查点分布在每次 LLM 调用和工具执行前后
+- [x] 工具并发：同轮多 tool_calls 通过 Promise.all 并发执行
+- [x] 降级显式化：超轮数时 yield 说明步骤 + answer.status="degraded" + 橙色标记
 - [x] 注释包含 Plan-and-Execute / Saga / Orchestrator 扩展方向

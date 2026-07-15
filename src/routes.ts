@@ -65,11 +65,31 @@ export async function chatRoutes(fastify: FastifyInstance) {
     }
     const history = store.getMessages(session.id);
 
-    // ===== 3. Agent 执行 + 输出 =====
+    // ===== 3. AbortSignal（客户端断开时中断 Agent）=====
+    const controller = new AbortController();
+    request.raw.on("close", () => controller.abort());
+
+    // ===== 4. Agent 执行 + 输出 =====
     if (stream) {
-      return handleSSE(reply, agent, store, session.id, message, history);
+      return handleSSE(
+        reply,
+        agent,
+        store,
+        session.id,
+        message,
+        history,
+        controller.signal
+      );
     } else {
-      return handleJSON(reply, agent, store, session.id, message, history);
+      return handleJSON(
+        reply,
+        agent,
+        store,
+        session.id,
+        message,
+        history,
+        controller.signal
+      );
     }
   });
 
@@ -101,7 +121,8 @@ async function handleSSE(
   store: MemoryStore,
   sessionId: string,
   message: string,
-  history: Message[]
+  history: Message[],
+  signal: AbortSignal
 ) {
   reply.raw.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -113,7 +134,7 @@ async function handleSSE(
   let finalContent = "";
 
   try {
-    for await (const step of agent.run(sessionId, message, history)) {
+    for await (const step of agent.run(sessionId, message, history, { signal })) {
       steps.push(step);
 
       if (step.type === "answer" && step.content) {
@@ -180,12 +201,13 @@ async function handleJSON(
   store: MemoryStore,
   sessionId: string,
   message: string,
-  history: Message[]
+  history: Message[],
+  signal: AbortSignal
 ) {
   const steps: AgentStep[] = [];
   let finalContent = "";
 
-  for await (const step of agent.run(sessionId, message, history)) {
+  for await (const step of agent.run(sessionId, message, history, { signal })) {
     steps.push(step);
     if (step.type === "answer" && step.content) {
       finalContent = step.content;

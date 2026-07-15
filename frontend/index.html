@@ -131,6 +131,15 @@
     line-height: 1.7;
     color: var(--text);
   }
+  .msg.assistant.degraded {
+    border-left: 3px solid var(--warning);
+    padding-left: 12px;
+  }
+  .msg.assistant.error {
+    border-left: 3px solid var(--error);
+    padding-left: 12px;
+    color: var(--error);
+  }
 
   /* ---- Step Tracker ---- */
   .step-tracker {
@@ -162,6 +171,7 @@
   .step-dot.running { background: var(--warning); animation: pulse 1s infinite; }
   .step-dot.completed { background: var(--success); }
   .step-dot.error { background: var(--error); }
+  .step-dot.degraded { background: var(--warning); }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 
   .step-item .step-icon { font-size: 14px; flex-shrink: 0; }
@@ -371,11 +381,14 @@ function updateStep(step) {
     }
     if (!answerEl) {
       answerEl = document.createElement('div');
-      answerEl.className = 'msg assistant';
+      answerEl.className =
+        step.status === 'degraded' ? 'msg assistant degraded' :
+        step.status === 'error' ? 'msg assistant error' :
+        'msg assistant';
       document.getElementById('messages').appendChild(answerEl);
     }
-    if (step.status === 'error') {
-      answerEl.textContent = step.content || '处理请求时出错，请重试';
+    if (step.status === 'error' || step.status === 'degraded') {
+      answerEl.textContent = step.content || (step.status === 'error' ? '处理请求时出错，请重试' : '');
     }
     return;
   }
@@ -399,7 +412,11 @@ function updateStep(step) {
   item.querySelector('.step-text').textContent =
     step.type === 'thinking' ? (step.status === 'completed' ? '分析完成' : '正在思考...') :
     step.type === 'tool_call' ? (step.status === 'completed' ? `已调用 ${step.name}` : `正在调用 ${step.name}...`) :
-    step.type === 'tool_result' ? (step.status === 'error' ? `${step.name} 执行失败` : `${step.name} 完成`) :
+    step.type === 'tool_result' ? (
+      step.status === 'degraded' ? `${step.name} 已降级` :
+      step.status === 'error' ? `${step.name} 失败` :
+      `${step.name} 完成`
+    ) :
     step.content || '';
 }
 
