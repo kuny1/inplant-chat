@@ -1,6 +1,6 @@
 # T4.3 API 路由 + 应用组装
 
-**状态**：✅ 完整实现
+**状态**：✅ 已完成
 **依赖**：T2.4（会话存储）, T2.5（限流）, T3.6（守卫）, T4.1（Agent）, T4.2（校验）
 **可并行**：否（需等待所有依赖完成）
 
@@ -10,276 +10,114 @@
 - `src/app.ts`
 - `src/main.ts`
 
-## 实现内容
+## 实现要点
 
-### src/app.ts
+### app.ts — Fastify 应用实例
 
-```typescript
-import Fastify from "fastify";
-import cors from "@fastify/cors";
-import fastifyStatic from "@fastify/static";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
-import { config } from "./config.js";
-import rateLimiterPlugin from "./middleware/rate-limiter.js";
-import { chatRoutes } from "./routes.js";
+注册顺序（影响中间件执行顺序）：
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-export async function createApp() {
-  const app = Fastify({ logger: true });
-
-  // CORS
-  await app.register(cors, { origin: true });
-
-  // 静态文件（serve frontend/）
-  await app.register(fastifyStatic, {
-    root: join(__dirname, "..", "frontend"),
-    prefix: "/",
-  });
-
-  // 限流
-  await app.register(rateLimiterPlugin);
-
-  // 路由
-  await app.register(chatRoutes, { prefix: "/api" });
-
-  return app;
-}
+```
+1. @fastify/cors     → 允许前端跨域，开发阶段 origin: true
+2. @fastify/static   → serve frontend/ 目录，使得 / 访问到 index.html
+3. rate-limiter      → onRequest hook，先于路由处理执行
+4. chatRoutes        → 挂载到 /api 前缀
 ```
 
-### src/routes.ts
+为什么用 Fastify 而非 Express？
+- 插件体系原生支持 async/await，无需额外包装
+- `onRequest` hook 天然适合限流这类前置逻辑
+- 性能在 Node.js 框架中属于第一梯队
 
-```typescript
-import type { FastifyInstance } from "fastify";
-import type { ChatRequest, ChatResponse, SSEEvent, Message } from "./types.js";
-import { guard } from "./guard.js";
-import type { ReactAgent } from "./agent.js";
-import type { MemoryStore } from "./memory/store.js";
-import { validateResponse } from "./validation/checker.js";
-import { randomUUID } from "crypto";
+### routes.ts — 核心路由
 
-export async function chatRoutes(fastify: FastifyInstance) {
-  /**
-   * POST /api/chat — 核心问答接口
-   *
-   * 支持两种模式：
-   * - stream=false（默认）: 返回完整 JSON 响应
-   * - stream=true: SSE 流式输出，事件类型 step / content / done
-   */
-  fastify.post("/chat", async (request, reply) => {
-    const { sessionId, message, stream } = request.body as ChatRequest;
+**POST /api/chat**（核心问答接口）：
 
-    // ===== 1. 领域守卫 =====
-    const guardResult = guard(message);
-    if (!guardResult.passed) {
-      if (stream) {
-        return sseReject(reply, guardResult.reason!);
-      }
-      return reply.send({
-        sessionId: sessionId || "",
-        content: guardResult.reason,
-        sources: [],
-        confidence: 0,
-        modelUsed: "",
-        tokensUsed: { input: 0, output: 0 },
-        steps: [{ type: "answer", content: guardResult.reason, status: "completed" }],
-      } satisfies ChatResponse);
-    }
+```
+handleChat(request, reply):
+  { sessionId, message, stream } = request.body
 
-    // ===== 2. 会话管理 =====
-    const store: MemoryStore = fastify.di.store;
-    let session = sessionId ? store.getSession(sessionId) : null;
-    if (!session) {
-      session = store.createSession("demo-user");
-    }
-    const history = store.getMessages(session.id);
+  // 1. 领域守卫
+  guardResult = guard(message)
+  if !guardResult.passed:
+    if stream → SSE 输出拒答文本
+    else → JSON 返回拒答文本
 
-    // ===== 3. Agent 执行 =====
-    const agent: ReactAgent = fastify.di.agent;
+  // 2. 会话管理
+  session = sessionId ? store.getSession(sessionId) : store.createSession("demo-user")
+  history = store.getMessages(session.id)
 
-    if (stream) {
-      // === SSE 流式模式 ===
-      reply.raw.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      });
-
-      const steps: AgentStep[] = [];
-      let finalContent = "";
-
-      try {
-        for await (const step of agent.run(session.id, message, history)) {
-          steps.push(step);
-          reply.raw.write(`event: step\ndata: ${JSON.stringify(step)}\n\n`);
-
-          if (step.type === "answer" && step.content) {
-            finalContent = step.content;
-            reply.raw.write(`event: content\ndata: ${JSON.stringify({ delta: step.content })}\n\n`);
-          }
-        }
-
-        // 校验
-        const validation = await validateResponse(finalContent, []);
-        const chatResponse: ChatResponse = {
-          sessionId: session.id,
-          content: finalContent,
-          sources: [],
-          confidence: validation.confidence,
-          modelUsed: "deepseek-chat",
-          tokensUsed: { input: 0, output: 0 },
-          steps,
-        };
-
-        reply.raw.write(`event: done\ndata: ${JSON.stringify(chatResponse)}\n\n`);
-        reply.raw.end();
-      } catch (error) {
-        reply.raw.write(
-          `event: step\ndata: ${JSON.stringify({ type: "answer", status: "error", content: "处理请求时出错，请重试" })}\n\n`
-        );
-        reply.raw.end();
-      }
-
-      // 保存消息
-      store.addMessage(session.id, {
-        id: randomUUID(), sessionId: session.id, role: "user", content: message, metadata: {},
-      } as Message);
-      store.addMessage(session.id, {
-        id: randomUUID(), sessionId: session.id, role: "assistant", content: finalContent, metadata: { steps },
-      } as Message);
-    } else {
-      // === JSON 模式 ===
-      const steps: AgentStep[] = [];
-      let finalContent = "";
-
-      for await (const step of agent.run(session.id, message, history)) {
-        steps.push(step);
-        if (step.type === "answer" && step.content) {
-          finalContent = step.content;
-        }
-      }
-
-      const validation = await validateResponse(finalContent, []);
-
-      // 保存消息
-      store.addMessage(session.id, {
-        id: randomUUID(), sessionId: session.id, role: "user", content: message, metadata: {},
-      } as Message);
-      store.addMessage(session.id, {
-        id: randomUUID(), sessionId: session.id, role: "assistant", content: finalContent, metadata: { steps },
-      } as Message);
-
-      return reply.send({
-        sessionId: session.id,
-        content: finalContent,
-        sources: [],
-        confidence: validation.confidence,
-        modelUsed: "deepseek-chat",
-        tokensUsed: { input: 0, output: 0 },
-        steps,
-      } satisfies ChatResponse);
-    }
-  });
-
-  /** GET /api/sessions/:id — 获取会话历史 */
-  fastify.get("/sessions/:id", async (request, reply) => {
-    const store: MemoryStore = fastify.di.store;
-    const session = store.getSession((request.params as any).id);
-    if (!session) {
-      return reply.code(404).send({ error: "会话不存在" });
-    }
-    return reply.send(session);
-  });
-
-  /** DELETE /api/sessions/:id — 删除会话 */
-  fastify.delete("/sessions/:id", async (request, reply) => {
-    const store: MemoryStore = fastify.di.store;
-    store.deleteSession((request.params as any).id);
-    return reply.send({ success: true });
-  });
-}
-
-function sseReject(reply: any, reason: string) {
-  reply.raw.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-  });
-  reply.raw.write(`event: content\ndata: ${JSON.stringify({ delta: reason })}\n\n`);
-  reply.raw.write(`event: done\ndata: ${JSON.stringify({ confidence: 0 })}\n\n`);
-  reply.raw.end();
-}
+  // 3. Agent 执行
+  if stream:
+    → handleSSE(reply, agent, store, session.id, message, history)
+  else:
+    → handleJSON(reply, agent, store, session.id, message, history)
 ```
 
-### src/main.ts
+**SSE 流式模式**（handleSSE）：
 
-```typescript
-import { config } from "./config.js";
-import { createLLMClient } from "./llm/client.js";
-import { loadDocuments } from "./rag/loader.js";
-import { embedDocuments } from "./rag/embedder.js";
-import { MemoryStore } from "./memory/store.js";
-import { ToolRegistry } from "./tools/registry.js";
-import { KnowledgeTool } from "./tools/knowledge.js";
-import { SensorTool } from "./tools/sensor.js";
-import { ReactAgent } from "./agent.js";
-import { createApp } from "./app.js";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-async function main() {
-  console.log("InPlant Chat MVP 启动中...\n");
-
-  // 1. LLM 客户端
-  const llm = createLLMClient();
-  console.log("✓ LLM 客户端已初始化");
-
-  // 2. 加载并向量化文档
-  const docsDir = join(__dirname, "..", "data", "documents");
-  const documents = loadDocuments(docsDir);
-  console.log(`✓ 已加载 ${documents.length} 篇文档`);
-
-  await embedDocuments(documents, llm);
-  console.log(`✓ 文档向量化完成（${documents.reduce((sum, d) => sum + d.chunks.length, 0)} 个块）`);
-
-  // 3. 工具注册
-  const registry = new ToolRegistry();
-  registry.register(new KnowledgeTool(documents, llm));
-  registry.register(new SensorTool(join(__dirname, "..", "data")));
-  console.log(`✓ 已注册 ${registry.list().length} 个工具: ${registry.list().join(", ")}`);
-
-  // 4. 会话存储
-  const store = new MemoryStore();
-
-  // 5. Agent
-  const agent = new ReactAgent(llm, registry);
-
-  // 6. 组装应用
-  const app = await createApp();
-
-  // 依赖注入（简化版：挂到 fastify 实例上）
-  app.decorate("di", { store, agent });
-
-  // 7. 启动
-  await app.listen({ port: config.port, host: "0.0.0.0" });
-  console.log(`\n 服务已启动: http://localhost:${config.port}`);
-  console.log(` 环境: development`);
-  console.log(` 模型: ${config.deepseek.model}\n`);
-}
-
-main().catch((err) => {
-  console.error("启动失败:", err);
-  process.exit(1);
-});
 ```
+1. 设置 headers: Content-Type: text/event-stream, Cache-Control: no-cache
+2. for await (step of agent.run(...)):
+     if step.type == "answer":
+       → event: content  (发送完整回答文本)
+     else:
+       → event: step     (发送中间步骤，前端渲染进度条)
+3. validateResponse(finalContent) → 填入 confidence
+4. → event: done  (发送 ChatResponse，含 sessionId/confidence/steps)
+5. 持久化: store.addMessage(user) + store.addMessage(assistant)
+```
+
+**JSON 模式**（handleJSON）：
+
+```
+1. for await (step of agent.run(...)): 收集 steps + finalContent
+2. validateResponse(finalContent)
+3. 持久化消息
+4. return ChatResponse JSON
+```
+
+事件流设计：
+
+| SSE event | 发送时机 | data 内容 | 前端渲染 |
+|-----------|---------|-----------|---------|
+| `step` | 每个非 answer 步骤 | `AgentStep`（type + name + status） | 更新步骤进度条 dot 颜色 |
+| `content` | Agent 产出 answer | `{ delta: "回答全文" }` | 追加到回答气泡 textContent |
+| `done` | 全部完成 | `ChatResponse`（含 sessionId, sources, confidence） | 渲染来源卡片 + 更新会话列表 |
+
+**GET /api/sessions/:id**：按 ID 查会话 → 404 或返回 Session JSON
+
+**DELETE /api/sessions/:id**：按 ID 删会话 → 返回 `{ success: true }`
+
+### main.ts — 启动流程
+
+```
+main():
+  1. createLLMClient()              → 检查 API Key，初始化客户端
+  2. loadDocuments(data/documents)  → 5 篇 .md → Document[]
+  3. embedDocuments(docs, llm)      → 调 embedding API → 写入 chunk.embedding
+  4. new ToolRegistry()
+     .register(KnowledgeTool)       → 注入 documents + llm
+     .register(SensorTool)          → 注入 data 目录路径
+  5. new MemoryStore()              → 内存会话存储
+  6. new ReactAgent(llm, registry)  → 注入 LLM + 工具注册表
+  7. createApp()                    → 创建 Fastify + 注册插件
+     app.decorate("di", { store, agent })  → 依赖注入（简化版）
+  8. app.listen(port)               → 启动 HTTP 服务
+```
+
+每步有 console 输出，启动失败时打印错误并 exit(1)。
+
+### 依赖注入
+
+当前用 `app.decorate("di", { store, agent })`——Fastify 的 decorate 机制，将依赖挂到实例上。路由中通过 `fastify.di` 访问。
+
+这是 MVP 级别的简化注入，没有用 IoC 容器。当模块增多时（如 Phase 5 新增 4 个工具），可升级为 `awilix` 等轻量 DI 库，但 MVP 阶段够用。
 
 ## 验收标准
 
-- [ ] `pnpm dev` 能正常启动，监听 3000 端口
-- [ ] POST /api/chat 能处理问答请求
-- [ ] 拒答场景返回预设话术
-- [ ] SSE 流式输出正常工作
-- [ ] GET /api/sessions/:id 返回会话历史
-- [ ] 前端页面可通过 http://localhost:3000 访问
+- [x] POST /api/chat 处理问答请求（stream + JSON 双模式）
+- [x] 拒答场景返回预设话术（SSE 和 JSON 均支持）
+- [x] SSE 三步事件（step → content → done）正常工作
+- [x] GET /api/sessions/:id 返回会话历史
+- [x] 前端页面通过 http://localhost:3000 访问
+- [x] `main.ts` 启动流程每步有日志输出
