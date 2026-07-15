@@ -1,6 +1,6 @@
 # T3.2 检索器
 
-**状态**：✅ 完整实现
+**状态**：✅ 已完成
 **依赖**：T3.1（向量化后的文档）
 **可并行**：否
 
@@ -8,91 +8,58 @@
 
 - `src/rag/retriever.ts`
 
-## 实现内容
+## 实现要点
 
-```typescript
-import type { LLMClient } from "../llm/client.js";
-import type { Document, Chunk } from "./loader.js";
+### 检索流程
 
-export interface RetrieveResult {
-  chunk: Chunk;
-  document: Document;
-  score: number;
-}
-
-/**
- * 余弦相似度
- * cos(θ) = (A·B) / (||A|| × ||B||)
- */
-function cosineSimilarity(a: number[], b: number[]): number {
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i]! * b[i]!;
-    normA += a[i]! * a[i]!;
-    normB += b[i]! * b[i]!;
-  }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dot / denom;
-}
-
-/**
- * RAG 检索器 — 语义搜索
- *
- * ## 检索流程
- * 1. 将用户 query 向量化
- * 2. 与所有文档块的向量计算余弦相似度
- * 3. 按相似度降序排列，取 topK
- * 4. 过滤低于 similarityThreshold 的结果
- *
- * ## 复杂度与扩展
- * - 当前：O(n) 暴力搜索，n = chunks总数，适合 n < 1000
- *
- * EXTEND: n > 1000 → pgvector ivfflat 索引
- *   创建索引：CREATE INDEX ON chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
- *   查询：SELECT *, 1 - (embedding <=> $1) AS score FROM chunks ORDER BY score DESC LIMIT $2;
- *
- * EXTEND: n > 100000 → HNSW (pgvector 或独立向量库如 Milvus/Qdrant)
- *   HNSW 在召回率和速度之间取得最佳平衡，但内存占用较高
- *
- * EXTEND: 混合检索 → 语义相似度 0.7 + BM25 关键词分数 0.3
- *   可以缓解纯语义搜索对专业术语的遗漏
- */
-export async function retrieve(
-  query: string,
-  documents: Document[],
-  llm: LLMClient,
-  options: { topK?: number; threshold?: number } = {}
-): Promise<RetrieveResult[]> {
-  const topK = options.topK ?? 3;
-  const threshold = options.threshold ?? 0.5;
-
-  // 1. 向量化查询
-  const [queryEmbedding] = await llm.embed([query]);
-  if (!queryEmbedding) return [];
-
-  // 2. 计算所有 chunk 的相似度
-  const scored: RetrieveResult[] = [];
-  for (const doc of documents) {
-    for (const chunk of doc.chunks) {
-      if (!chunk.embedding) continue;
-      const score = cosineSimilarity(queryEmbedding, chunk.embedding);
-      if (score >= threshold) {
-        scored.push({ chunk, document: doc, score });
-      }
-    }
-  }
-
-  // 3. 降序排列，取 topK
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, topK);
-}
 ```
+输入: query 文本 + Document[]（含 embedding）+ options { topK, threshold }
+输出: RetrieveResult[]（按相似度降序，最多 topK 条）
+
+1. llm.embed([query]) → queryVector
+2. 遍历所有 document.chunks:
+     if chunk.embedding 存在:
+       score = cosineSimilarity(queryVector, chunk.embedding)
+       if score >= threshold → 加入候选集
+3. 候选集按 score 降序排列
+4. 返回前 topK 条
+```
+
+### 余弦相似度计算
+
+```
+cosineSimilarity(A, B):
+  dot = Σ(A[i] * B[i])
+  normA = √Σ(A[i]²)
+  normB = √Σ(B[i]²)
+  return dot / (normA * normB)
+```
+
+- 两个向量长度相等时，余弦值范围为 [-1, 1]
+- embedding 向量已经归一化的情况下余弦值与内积等价，但这里显式计算保证普适性
+- 分母为 0 时返回 0（空向量场景，理论上不应出现）
+
+### 复杂度与扩展路径
+
+| 阶段 | 数据量 | 方案 | 说明 |
+|------|--------|------|------|
+| 当前（MVP） | ~50 chunks | 内存暴力搜索 O(n) | 遍历所有 chunk 计算余弦相似度 |
+| 中期 | >1000 chunks | pgvector ivfflat 索引 | `CREATE INDEX ... USING ivfflat (embedding vector_cosine_ops)`，查询用 `<=>` 余弦距离运算符 |
+| 远期 | >10万 chunks | HNSW 索引 | pgvector 内置 HNSW 或独立向量库（Milvus/Qdrant），召回率和速度最优 |
+
+### 混合检索扩展
+
+注释预留：当前纯语义搜索可能遗漏精确关键词匹配。后续可改为加权混合：
+
+```
+finalScore = semanticScore * 0.7 + bm25Score * 0.3
+```
+
+BM25 对专业术语的精确匹配更敏感（如 "T-101" 这样的测点编号），语义搜索擅长同义词和语义相近的查询。
 
 ## 验收标准
 
-- [ ] 能根据查询返回相关文档块
-- [ ] 返回结果按相似度降序排列
-- [ ] 低于阈值的块被过滤
-- [ ] 注释中说明 pgvector / HNSW 升级路径
+- [x] 能根据查询返回相关文档块
+- [x] 返回结果按相似度降序排列
+- [x] 低于 threshold 的块被过滤
+- [x] 注释包含 pgvector / HNSW 升级路径
