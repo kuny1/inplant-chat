@@ -29,8 +29,10 @@ const EDGE_KEYWORDS: [string, number][] = [
   ["维护保养", 1], ["设备检修", 1], ["换热", 1],
 ];
 
+const ALL_KEYWORDS = [...CORE_KEYWORDS, ...EXTENDED_KEYWORDS, ...EDGE_KEYWORDS];
+
 /** 放行阈值 */
-const PASS_THRESHOLD = 3;
+export const PASS_THRESHOLD = 3;
 
 /** 拒答模板 */
 const REJECT_TEMPLATE =
@@ -39,13 +41,37 @@ const REJECT_TEMPLATE =
   "如有反应釜相关问题，欢迎随时提问。";
 
 // ============================================================
+// 关键词打分（纯函数，不含注入检测与会话上下文判断）
+// ============================================================
+
+/**
+ * 对单条消息做关键词打分。
+ *
+ * 供两处使用：
+ * 1. guard() — 当前消息的关键词匹配
+ * 2. 会话上下文判断 — 遍历历史消息，确认是否为已建立的反应釜对话
+ */
+export function scoreKeywords(message: string): number {
+  const cleaned = message.trim();
+  let score = 0;
+
+  for (const [keyword, weight] of ALL_KEYWORDS) {
+    if (cleaned.includes(keyword)) {
+      score += weight;
+    }
+  }
+
+  return score;
+}
+
+// ============================================================
 // 领域守卫
 // ============================================================
 
 /**
  * 领域守卫 — 判断用户问题是否关于聚合反应釜
  *
- * ## 两步检测流程
+ * ## 三步检测流程
  *
  * ### Step 1: 输入清洗
  * - trim + 长度上限 2000 字
@@ -54,7 +80,12 @@ const REJECT_TEMPLATE =
  * ### Step 2: 关键词匹配 + 计分
  * - 遍历三级关键词词典，每次命中累加权重
  * - 得分 >= PASS_THRESHOLD(3) → 放行
- * - 得分 < PASS_THRESHOLD(3) → 拒答 + 猜测用户领域
+ * - 得分 < PASS_THRESHOLD(3) → 进入 Step 3
+ *
+ * ### Step 3: 会话上下文判断
+ * - 如果当前消息得分不足，但会话中已有反应釜相关历史消息
+ *   （即 isOngoingReactorSession = true），则视为追问 → 放行
+ * - 否则 → 拒答 + 猜测用户领域
  *
  * ## 领域猜测
  * 拒答时用简单规则匹配关键词: 烹饪/代码/金融 → 对应领域，否则 → "其他"
@@ -72,7 +103,10 @@ const REJECT_TEMPLATE =
  * 当输入过于模糊（如"那个温度怎么样了"），不直接拒答，
  * 返回澄清问题让用户补充信息（"请说明是哪个设备、哪个测点"）。
  */
-export function guard(message: string): GuardResult {
+export function guard(
+  message: string,
+  context?: { isOngoingReactorSession: boolean }
+): GuardResult {
   // === Step 1: 清洗 ===
   const cleaned = message.trim();
 
@@ -97,20 +131,12 @@ export function guard(message: string): GuardResult {
   }
 
   // === Step 2: 关键词匹配 ===
-  let score = 0;
-  const allKeywords = [
-    ...CORE_KEYWORDS,
-    ...EXTENDED_KEYWORDS,
-    ...EDGE_KEYWORDS,
-  ];
-
-  for (const [keyword, weight] of allKeywords) {
-    if (cleaned.includes(keyword)) {
-      score += weight;
-    }
+  if (scoreKeywords(cleaned) >= PASS_THRESHOLD) {
+    return { passed: true };
   }
 
-  if (score >= PASS_THRESHOLD) {
+  // === Step 3: 会话上下文 — 追问（追问句中无关键词但属于已建立的反应釜对话） ===
+  if (context?.isOngoingReactorSession) {
     return { passed: true };
   }
 

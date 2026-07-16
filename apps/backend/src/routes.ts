@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { randomUUID } from "crypto";
 import type { ChatRequest, ChatResponse, Message, AgentStep } from "./types";
-import { guard } from "./guard";
+import { guard, scoreKeywords, PASS_THRESHOLD } from "./guard";
 import type { ReactAgent } from "./agent";
 import type { SessionStore } from "./memory/store";
 import { DEMO_USER_ID } from "./memory/store";
@@ -31,13 +31,24 @@ async function* runAgent(
   data: unknown;
   step?: AgentStep;
 }> {
-  const guardResult = guard(message);
+  // 1. 先加载会话（用于上下文判断）
+  let session = sessionId ? await store.getSession(sessionId) : null;
+
+  // 2. 判断是否已有反应釜上下文：历史 user 消息中任一条通过过 guard
+  const isOngoingReactorSession = session
+    ? session.messages.some(
+        (m) => m.role === "user" && scoreKeywords(m.content) >= PASS_THRESHOLD
+      )
+    : false;
+
+  // 3. 守卫检查（传入上下文：追问时即使无关键词也能放行）
+  const guardResult = guard(message, { isOngoingReactorSession });
   if (!guardResult.passed) {
     yield { type: "reject", data: guardResult.reason };
     return;
   }
 
-  let session = sessionId ? await store.getSession(sessionId) : null;
+  // 4. 新会话才 create，已有会话直接复用
   if (!session) session = await store.createSession(DEMO_USER_ID);
   const history = await store.getMessages(session.id);
 

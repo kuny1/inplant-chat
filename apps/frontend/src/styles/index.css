@@ -126,6 +126,7 @@ body {
 
 .messages-inner {
   display: flex;
+  flex: 1;
   flex-direction: column;           /* 消息保持正常从上到下顺序 */
   gap: 16px;
 }
