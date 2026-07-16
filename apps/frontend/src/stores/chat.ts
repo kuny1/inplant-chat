@@ -17,35 +17,41 @@ export interface UISession {
   title: string;
 }
 
-// ---- SSE 步骤（流式过程中实时更新的临时状态） ----
+// ---- 流式步骤 ----
 
 export interface PendingStep {
-  key: string; // "thinking" | "tool_call:name" | "tool_result:name"
+  key: string;
   type: AgentStep["type"];
   name?: string;
   status: AgentStep["status"];
   content?: string;
 }
 
+// ---- key 生成规则 ----
+// tool 系列（call/retry/result）→ key = name（同工具共享条目，状态自然流转）
+// 无 name 的 step（thinking/generating/calling 等）→ key = type
+// content 和废弃的 answer → null（不进入 pendingSteps）
+
+function stepKey(step: AgentStep): string | null {
+  if (step.type === "content" || (step.type as string) === "answer") return null;
+
+  const toolTypes = new Set(["tool_call", "tool_retry", "tool_result"]);
+  if (toolTypes.has(step.type) && step.name) return step.name;
+
+  return step.type;
+}
+
 // ---- Store ----
 
 interface ChatState {
-  // 会话
   sessions: UISession[];
   currentSessionId: string | null;
-
-  // 消息
   messages: UIMessage[];
-
-  // 流式状态
   isStreaming: boolean;
-  pendingSteps: PendingStep[]; // 当前正在执行的步骤（替换旧的 stepTracker）
-  streamingContent: string; // 当前正在接收的回答文本
-
-  // 输入
+  pendingSteps: PendingStep[];
+  streamingContent: string;
   inputValue: string;
 
-  // Actions
   setInputValue: (v: string) => void;
   sendMessage: (message: string) => Promise<void>;
   clearSession: () => void;
@@ -87,22 +93,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     es.addEventListener("step", (e: MessageEvent) => {
       const step: AgentStep = JSON.parse(e.data);
-
-      if (step.type === "answer") return; // content 事件处理回答
-
-      // key 只用 name，tool_call 和 tool_result 共享同一条目
-      // tool_call(running) → tool_result(completed/degraded/error) 自然覆盖
-      const key = step.name || "thinking";
+      const key = stepKey(step);
+      if (!key) return; // content/answer 类型不进入 pendingSteps
 
       set((s) => {
         const idx = s.pendingSteps.findIndex((p) => p.key === key);
-        const ps: PendingStep = {
-          key,
-          type: step.type,
-          name: step.name,
-          status: step.status || "running",
-          content: step.content,
-        };
+        const ps: PendingStep = { key, type: step.type, name: step.name, status: step.status || "running", content: step.content };
         if (idx >= 0) {
           const updated = [...s.pendingSteps];
           updated[idx] = ps;
@@ -114,8 +110,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     es.addEventListener("content", (e: MessageEvent) => {
       const { delta } = JSON.parse(e.data) as { delta: string };
-      finalContent = delta;
-      set({ streamingContent: delta });
+      finalContent += delta;
+      set((s) => ({ streamingContent: s.streamingContent + delta }));
     });
 
     es.addEventListener("done", (e: MessageEvent) => {
@@ -130,12 +126,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         id: crypto.randomUUID(),
         role: "assistant",
         content: finalContent,
-        steps: get().pendingSteps.map((p) => ({
-          type: p.type,
-          name: p.name,
-          status: p.status,
-          content: p.content,
-        } as AgentStep)),
+        steps: get().pendingSteps.map((p) => ({ type: p.type, name: p.name, status: p.status, content: p.content } as AgentStep)),
         sources: data.sources,
         isDegraded: data.confidence < 0.5,
       };
@@ -148,13 +139,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         streamingContent: "",
         currentSessionId: data.sessionId || s.currentSessionId,
         sessions: isNewSession
-          ? [
-              {
-                id: data.sessionId,
-                title: message.slice(0, 30) + (message.length > 30 ? "..." : ""),
-              },
-              ...s.sessions,
-            ]
+          ? [{ id: data.sessionId, title: message.slice(0, 30) + (message.length > 30 ? "..." : "") }, ...s.sessions]
           : s.sessions,
       }));
     });
@@ -176,12 +161,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clearSession: () =>
-    set({
-      currentSessionId: null,
-      messages: [],
-      pendingSteps: [],
-      streamingContent: "",
-    }),
+    set({ currentSessionId: null, messages: [], pendingSteps: [], streamingContent: "" }),
 
   loadSession: async (id) => {
     if (get().isStreaming) return;
@@ -191,15 +171,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const session = await res.json();
       set({
         currentSessionId: id,
-        messages: session.messages?.map((m: any) => ({
-          id: m.id,
-          role: m.role,
-          content: m.content,
-          steps: m.metadata?.steps,
-        })) || [],
+        messages: session.messages?.map((m: any) => ({ id: m.id, role: m.role, content: m.content, steps: m.metadata?.steps })) || [],
       });
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   },
 }));

@@ -32,10 +32,10 @@ async function executeOne(
 
   // 失败 → 重试一次
   const retryStep: AgentStep = {
-    type: "tool_call",
+    type: "tool_retry",
     name: tc.name,
     status: "running",
-    content: `${tc.name} 执行失败（${result.error}），正在重试...`,
+    content: `${tc.name} 首次失败（${result.error}），正在重试（仅重试1次）...`,
   };
 
   result = await registry.execute(tc.name, args);
@@ -153,7 +153,7 @@ export class ToolExecutor {
           type: "tool_result",
           name: tc.name,
           status: "degraded",
-          content: `${tc.name} 已降级处理：两次尝试均失败`,
+          content: `${tc.name} 暂时不可用（已重试1次），本次回答将跳过该数据源。如需最新数据，请稍后重试。`,
         };
       } else {
         yield {

@@ -71,7 +71,23 @@ export interface GuardResult {
 // Agent 步骤（过程透出）
 // ============================================================
 
-export type StepType = "thinking" | "tool_call" | "tool_result" | "answer";
+export type StepType =
+  | "guarding"        // 系统：输入校验+领域检查
+  | "memory_loading"  // 系统：加载会话历史、用户偏好
+  | "intent_recognition" // LLM/系统：理解用户意图
+  | "thinking"        // LLM：自由推理（可能产出 tool_calls）
+  | "planning"        // LLM：生成结构化执行计划（多步任务时）
+  | "calling"         // 系统：LLM 已决定调用工具，准备执行
+  | "tool_call"       // 工具：单个工具执行中
+  | "tool_retry"      // 工具：首次失败后正在重试
+  | "tool_result"     // 工具：执行完成/降级/失败
+  | "generating"      // LLM：基于工具结果生成最终回答
+  | "content"         // 输出：流式文本块（delta）
+  | "validating"      // 系统：安全和事实性校验
+  | "done"            // 输出：完成（仅元数据）
+  | "error"           // 输出：异常终止
+  | "degraded";       // 输出：降级完成
+
 export type StepStatus = "running" | "completed" | "error" | "degraded";
 
 export interface AgentStep {
@@ -100,15 +116,13 @@ export interface Source {
   relevance: number;
 }
 
-/** 问答响应 */
+/** 问答响应（终端事件：done / error / degraded） */
 export interface ChatResponse {
   sessionId: string;
-  content: string;
   sources: Source[];
   confidence: number;
   modelUsed: string;
   tokensUsed: { input: number; output: number };
-  steps: AgentStep[];
 }
 
 /** SSE 事件 */

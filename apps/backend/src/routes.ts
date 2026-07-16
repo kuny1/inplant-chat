@@ -17,7 +17,7 @@ function getDeps(fastify: FastifyInstance): Dependencies {
   return fastify.di as Dependencies;
 }
 
-// ---- 共享核心逻辑：guard → session → agent 执行 ----
+// ---- 共享核心逻辑 ----
 
 async function* runAgent(
   store: MemoryStore,
@@ -26,37 +26,35 @@ async function* runAgent(
   sessionId: string | undefined,
   signal: AbortSignal
 ): AsyncGenerator<{
-  type: "reject" | "stream-start" | "step" | "done";
+  type: "reject" | "done";
   data: unknown;
+  step?: AgentStep;
 }> {
-  // 1. 领域守卫
   const guardResult = guard(message);
   if (!guardResult.passed) {
     yield { type: "reject", data: guardResult.reason };
     return;
   }
 
-  // 2. 会话
   let session = sessionId ? store.getSession(sessionId) : null;
   if (!session) session = store.createSession("demo-user");
   const history = store.getMessages(session.id);
 
-  // 3. Agent 执行
   const steps: AgentStep[] = [];
   let finalContent = "";
 
-  yield { type: "stream-start", data: { sessionId: session.id } };
-
   for await (const step of agent.run(session.id, message, history, { signal })) {
     steps.push(step);
-    yield { type: "step", data: step };
 
-    if (step.type === "answer" && step.content) {
-      finalContent = step.content;
+    // content 类型的 chunk 累积为最终回答文本
+    if (step.type === "content" && step.content) {
+      finalContent += step.content;
     }
+
+    yield { type: "done", data: null, step };
   }
 
-  // 4. 持久化
+  // 持久化
   store.addMessage(session.id, {
     id: randomUUID(),
     sessionId: session.id,
@@ -72,22 +70,20 @@ async function* runAgent(
     metadata: { steps },
   } as Message);
 
-  // 5. 校验
+  // 校验
   const validation = await validateResponse(finalContent, []);
   const chatResponse: ChatResponse = {
     sessionId: session.id,
-    content: finalContent,
     sources: [],
     confidence: validation.confidence,
     modelUsed: "deepseek-chat",
     tokensUsed: { input: 0, output: 0 },
-    steps,
   };
 
   yield { type: "done", data: chatResponse };
 }
 
-// ---- SSE 输出辅助 ----
+// ---- SSE 辅助 ----
 
 function writeSSE(raw: any, event: string, data: unknown): void {
   raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -106,12 +102,6 @@ function sseHeaders(reply: FastifyReply): void {
 // ============================================================
 
 export async function chatRoutes(fastify: FastifyInstance) {
-  /**
-   * GET /api/chat?message=xxx&sessionId=yyy
-   *
-   * 为浏览器标准 EventSource 设计（EventSource 只支持 GET）。
-   * 响应固定为 SSE 流式格式。
-   */
   fastify.get("/chat", async (request, reply) => {
     const { store, agent } = getDeps(fastify);
     const query = request.query as { message?: string; sessionId?: string };
@@ -127,40 +117,30 @@ export async function chatRoutes(fastify: FastifyInstance) {
     sseHeaders(reply);
 
     for await (const event of runAgent(store, agent, message, query.sessionId, controller.signal)) {
-      switch (event.type) {
-        case "reject":
-          writeSSE(reply.raw, "content", { delta: event.data as string });
-          writeSSE(reply.raw, "done", { confidence: 0 });
-          reply.raw.end();
-          return;
+      if (event.type === "reject") {
+        writeSSE(reply.raw, "content", { delta: event.data as string });
+        writeSSE(reply.raw, "done", { confidence: 0 });
+        reply.raw.end();
+        return;
+      }
 
-        case "stream-start":
-          // sessionId 已包含在 done 事件中，无需单独发送
-          break;
-
-        case "step": {
-          const step = event.data as AgentStep;
-          if (step.type === "answer" && step.content) {
-            writeSSE(reply.raw, "content", { delta: step.content });
+      if (event.type === "done") {
+        if (event.step) {
+          // 中间步骤：content → event:content，其他 → event:step
+          if (event.step.type === "content") {
+            writeSSE(reply.raw, "content", { delta: event.step.content });
           } else {
-            writeSSE(reply.raw, "step", step);
+            writeSSE(reply.raw, "step", event.step);
           }
-          break;
-        }
-
-        case "done":
+        } else {
+          // 终端 done 事件
           writeSSE(reply.raw, "done", event.data);
           reply.raw.end();
-          break;
+        }
       }
     }
   });
 
-  /**
-   * POST /api/chat
-   *
-   * 支持 JSON 和 SSE 双模式，通过 body.stream 控制。
-   */
   fastify.post("/chat", async (request, reply) => {
     const { store, agent } = getDeps(fastify);
     const { sessionId, message, stream } = request.body as ChatRequest;
@@ -175,58 +155,59 @@ export async function chatRoutes(fastify: FastifyInstance) {
     if (stream) {
       sseHeaders(reply);
       for await (const event of runAgent(store, agent, message, sessionId, controller.signal)) {
-        switch (event.type) {
-          case "reject":
-            writeSSE(reply.raw, "content", { delta: event.data as string });
-            writeSSE(reply.raw, "done", { confidence: 0 });
-            reply.raw.end();
-            return;
+        if (event.type === "reject") {
+          writeSSE(reply.raw, "content", { delta: event.data as string });
+          writeSSE(reply.raw, "done", { confidence: 0 });
+          reply.raw.end();
+          return;
+        }
 
-          case "stream-start":
-            break;
-
-          case "step": {
-            const step = event.data as AgentStep;
-            if (step.type === "answer" && step.content) {
-              writeSSE(reply.raw, "content", { delta: step.content });
+        if (event.type === "done") {
+          if (event.step) {
+            if (event.step.type === "content") {
+              writeSSE(reply.raw, "content", { delta: event.step.content });
             } else {
-              writeSSE(reply.raw, "step", step);
+              writeSSE(reply.raw, "step", event.step);
             }
-            break;
-          }
-
-          case "done":
+          } else {
             writeSSE(reply.raw, "done", event.data);
             reply.raw.end();
-            break;
+          }
         }
       }
     } else {
-      // JSON 模式：收集所有步骤，返回 ChatResponse
+      // JSON 模式
+      const steps: AgentStep[] = [];
+      let finalContent = "";
       let final: ChatResponse | null = null;
 
       for await (const event of runAgent(store, agent, message, sessionId, controller.signal)) {
         if (event.type === "reject") {
           return reply.send({
             sessionId: sessionId || "",
-            content: event.data as string,
             sources: [],
             confidence: 0,
             modelUsed: "",
             tokensUsed: { input: 0, output: 0 },
-            steps: [{ type: "answer", content: event.data as string, status: "completed" }],
           } satisfies ChatResponse);
         }
+
         if (event.type === "done") {
-          final = event.data as ChatResponse;
+          if (event.step) {
+            steps.push(event.step);
+            if (event.step.type === "content" && event.step.content) {
+              finalContent += event.step.content;
+            }
+          } else {
+            final = event.data as ChatResponse;
+          }
         }
       }
 
-      return reply.send(final!);
+      return reply.send({ ...final!, content: finalContent, steps } as any);
     }
   });
 
-  /** GET /api/sessions/:id */
   fastify.get("/sessions/:id", async (request, reply) => {
     const { store } = getDeps(fastify);
     const session = store.getSession((request.params as { id: string }).id);
@@ -234,7 +215,6 @@ export async function chatRoutes(fastify: FastifyInstance) {
     return reply.send(session);
   });
 
-  /** DELETE /api/sessions/:id */
   fastify.delete("/sessions/:id", async (request, reply) => {
     const { store } = getDeps(fastify);
     store.deleteSession((request.params as { id: string }).id);

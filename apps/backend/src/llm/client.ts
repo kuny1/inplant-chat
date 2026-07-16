@@ -44,6 +44,11 @@ export interface LLMClient {
     messages: ChatMessage[],
     tools?: ToolDefinition[]
   ): Promise<AssistantMessage>;
+
+  /** 流式对话：逐 token yield delta 文本。产生最终回答时用。 */
+  chatStream(
+    messages: ChatMessage[]
+  ): AsyncGenerator<{ delta: string }>;
 }
 
 // ---- DeepSeek Client ----
@@ -106,6 +111,30 @@ export class DeepSeekClient implements LLMClient {
     }
   }
 
+  async *chatStream(
+    messages: ChatMessage[]
+  ): AsyncGenerator<{ delta: string }> {
+    try {
+      const stream = await this.client.chat.completions.create({
+        model: config.deepseek.model,
+        messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
+        temperature: 0.3,
+        stream: true,
+      });
+
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta?.content;
+        if (delta) yield { delta };
+      }
+    } catch (error) {
+      if (error instanceof LLMAPIError) throw error;
+      if (error instanceof Error && "status" in error) {
+        const apiErr = error as { status: number; message: string };
+        throw new LLMAPIError(apiErr.status, apiErr.message);
+      }
+      throw new LLMAPIError(500, `流式调用异常: ${String(error)}`);
+    }
+  }
 }
 
 // ---- Factory ----
