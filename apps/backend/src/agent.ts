@@ -155,7 +155,7 @@ export class ReactAgent {
             name: tc.name,
             arguments: tc.arguments,
           })),
-          signal
+          { signal }
         )) {
           yield step;
         }

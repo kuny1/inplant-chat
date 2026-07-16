@@ -1,6 +1,8 @@
 import type { AgentStep } from "../types";
 import type { ToolRegistry } from "../tools/registry";
 
+const DEFAULT_TIMEOUT = 5000;
+
 /**
  * 单工具执行结果
  */
@@ -12,6 +14,36 @@ interface SingleResult {
 }
 
 /**
+ * 带超时的单工具执行。使用 Promise.race 竞争执行结果与超时定时器。
+ * 超时 → 返回 error ToolResult，触发 executeOne 的重试/降级流程。
+ */
+async function executeWithTimeout(
+  registry: ToolRegistry,
+  tc: { id: string; name: string; arguments: Record<string, unknown> },
+  timeoutMs: number
+): Promise<{ toolCallId: string; name: string; content: string; error?: string }> {
+  const args = { ...tc.arguments, _toolCallId: tc.id };
+
+  let timeoutId: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<{ toolCallId: string; name: string; content: string; error: string }>(
+    (resolve) => {
+      timeoutId = setTimeout(() => {
+        resolve({
+          toolCallId: tc.id,
+          name: tc.name,
+          content: "",
+          error: `工具 ${tc.name} 执行超时（${timeoutMs}ms）`,
+        });
+      }, timeoutMs);
+    }
+  );
+
+  const result = await Promise.race([registry.execute(tc.name, args), timeoutPromise]);
+  clearTimeout(timeoutId!);
+  return result;
+}
+
+/**
  * 带重试的单工具执行。
  * 第一次失败 → 重试一次 → 仍失败 → 返回降级结果。
  *
@@ -20,12 +52,11 @@ interface SingleResult {
  */
 async function executeOne(
   registry: ToolRegistry,
-  tc: { id: string; name: string; arguments: Record<string, unknown> }
+  tc: { id: string; name: string; arguments: Record<string, unknown> },
+  timeout: number
 ): Promise<SingleResult> {
-  const args = { ...tc.arguments, _toolCallId: tc.id };
-
   // 第一次尝试
-  let result = await registry.execute(tc.name, args);
+  let result = await executeWithTimeout(registry, tc, timeout);
   if (!result.error) {
     return { tc, result };
   }
@@ -38,7 +69,7 @@ async function executeOne(
     content: `${tc.name} 首次失败（${result.error}），正在重试（仅重试1次）...`,
   };
 
-  result = await registry.execute(tc.name, args);
+  result = await executeWithTimeout(registry, tc, timeout);
   if (!result.error) {
     return { tc, result, retryStep };
   }
@@ -98,8 +129,10 @@ export class ToolExecutor {
       name: string;
       arguments: Record<string, unknown>;
     }>,
-    signal?: AbortSignal
+    options?: { signal?: AbortSignal; timeout?: number }
   ): AsyncGenerator<AgentStep> {
+    const timeout = options?.timeout ?? DEFAULT_TIMEOUT;
+    const signal = options?.signal;
     this.results = [];
 
     // ---- 通知前端「开始执行」 ----
@@ -127,7 +160,7 @@ export class ToolExecutor {
 
     // ---- 并发执行（allSettled：一个崩不影响其他） ----
     const settled = await Promise.allSettled(
-      toolCalls.map((tc) => executeOne(this.registry, tc))
+      toolCalls.map((tc) => executeOne(this.registry, tc, timeout))
     );
 
     // ---- 收集结果 + yield 状态 ----

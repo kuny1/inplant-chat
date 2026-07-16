@@ -121,9 +121,15 @@ body {
   overflow-y: auto;
   padding: 20px 24px;
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse;   /* scroll 原点在底部，内容向上溢出 */
+}
+
+.messages-inner {
+  display: flex;
+  flex-direction: column;           /* 消息保持正常从上到下顺序 */
   gap: 16px;
 }
+
 .domain-hint {
   font-size: 13px;
   color: var(--text-secondary);

@@ -52,26 +52,28 @@ export function MessageList() {
 
   return (
     <div className="messages">
-      {messages.length === 0 && !isStreaming && <EmptyHint />}
+      <div className="messages-inner">
+        {messages.length === 0 && !isStreaming && <EmptyHint />}
 
-      {messages.map((msg) =>
-        msg.role === "user" ? (
-          <UserBubble key={msg.id} msg={msg} />
-        ) : (
-          <AssistantBubble key={msg.id} msg={msg} />
-        )
-      )}
+        {messages.map((msg) =>
+          msg.role === "user" ? (
+            <UserBubble key={msg.id} msg={msg} />
+          ) : (
+            <AssistantBubble key={msg.id} msg={msg} />
+          )
+        )}
 
-      {/* 流式过程中：实时步骤 + 流式 markdown */}
-      {isStreaming && pendingSteps.length > 0 && (
-        <StepTracker steps={pendingSteps} live />
-      )}
+        {/* 流式内容放最后 → 在 inner 最底部 → column-reverse 后固定在视觉底部 */}
+        {isStreaming && pendingSteps.length > 0 && (
+          <StepTracker steps={pendingSteps} live />
+        )}
 
-      {isStreaming && streamingContent && (
-        <div className="msg assistant streaming">
-          <Streamdown>{streamingContent}</Streamdown>
-        </div>
-      )}
+        {isStreaming && streamingContent && (
+          <div className="msg assistant streaming">
+            <Streamdown>{streamingContent}</Streamdown>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
