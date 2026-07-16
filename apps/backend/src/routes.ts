@@ -3,24 +3,25 @@ import { randomUUID } from "crypto";
 import type { ChatRequest, ChatResponse, Message, AgentStep } from "./types";
 import { guard } from "./guard";
 import type { ReactAgent } from "./agent";
-import type { MemoryStore } from "./memory/store";
+import type { SessionStore } from "./memory/store";
+import { DEMO_USER_ID } from "./memory/store";
 import { validateResponse } from "./validation/checker";
 
 // ---- 依赖获取 ----
 
 interface Dependencies {
-  store: MemoryStore;
+  store: SessionStore;
   agent: ReactAgent;
 }
 
 function getDeps(fastify: FastifyInstance): Dependencies {
-  return fastify.di as Dependencies;
+  return (fastify as any).di as Dependencies;
 }
 
 // ---- 共享核心逻辑 ----
 
 async function* runAgent(
-  store: MemoryStore,
+  store: SessionStore,
   agent: ReactAgent,
   message: string,
   sessionId: string | undefined,
@@ -36,9 +37,9 @@ async function* runAgent(
     return;
   }
 
-  let session = sessionId ? store.getSession(sessionId) : null;
-  if (!session) session = store.createSession("demo-user");
-  const history = store.getMessages(session.id);
+  let session = sessionId ? await store.getSession(sessionId) : null;
+  if (!session) session = await store.createSession(DEMO_USER_ID);
+  const history = await store.getMessages(session.id);
 
   const steps: AgentStep[] = [];
   let finalContent = "";
@@ -55,14 +56,14 @@ async function* runAgent(
   }
 
   // 持久化
-  store.addMessage(session.id, {
+  await store.addMessage(session.id, {
     id: randomUUID(),
     sessionId: session.id,
     role: "user",
     content: message,
     metadata: {},
   } as Message);
-  store.addMessage(session.id, {
+  await store.addMessage(session.id, {
     id: randomUUID(),
     sessionId: session.id,
     role: "assistant",
@@ -208,16 +209,27 @@ export async function chatRoutes(fastify: FastifyInstance) {
     }
   });
 
+  /** GET /api/sessions — 列出当前用户的所有会话 */
+  fastify.get("/sessions", async (_request, reply) => {
+    const { store } = getDeps(fastify);
+    const sessions = await store.listSessions(DEMO_USER_ID);
+    return reply.send(sessions.map((s) => ({
+      id: s.id,
+      title: s.title,
+      updatedAt: s.updatedAt,
+    })));
+  });
+
   fastify.get("/sessions/:id", async (request, reply) => {
     const { store } = getDeps(fastify);
-    const session = store.getSession((request.params as { id: string }).id);
+    const session = await store.getSession((request.params as { id: string }).id);
     if (!session) return reply.code(404).send({ error: "会话不存在" });
     return reply.send(session);
   });
 
   fastify.delete("/sessions/:id", async (request, reply) => {
     const { store } = getDeps(fastify);
-    store.deleteSession((request.params as { id: string }).id);
+    await store.deleteSession((request.params as { id: string }).id);
     return reply.send({ success: true });
   });
 }

@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useChatStore } from "../stores/chat";
 
 export function Sidebar() {
@@ -5,6 +6,11 @@ export function Sidebar() {
   const currentId = useChatStore((s) => s.currentSessionId);
   const clearSession = useChatStore((s) => s.clearSession);
   const loadSession = useChatStore((s) => s.loadSession);
+  const fetchSessions = useChatStore((s) => s.fetchSessions);
+
+  useEffect(() => {
+    fetchSessions();
+  }, []);
 
   return (
     <aside className="sidebar">

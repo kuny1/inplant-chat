@@ -56,6 +56,7 @@ interface ChatState {
   sendMessage: (message: string) => Promise<void>;
   clearSession: () => void;
   loadSession: (id: string) => Promise<void>;
+  fetchSessions: () => Promise<void>;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -171,8 +172,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const session = await res.json();
       set({
         currentSessionId: id,
-        messages: session.messages?.map((m: any) => ({ id: m.id, role: m.role, content: m.content, steps: m.metadata?.steps })) || [],
+        messages: (session.messages || []).map((m: any) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          steps: m.metadata?.steps || [],
+          sources: m.metadata?.sources || [],
+        })),
+        pendingSteps: [],
+        streamingContent: "",
       });
+    } catch { /* ignore */ }
+  },
+
+  fetchSessions: async () => {
+    try {
+      const res = await fetch("/api/sessions");
+      if (!res.ok) return;
+      const list = await res.json();
+      set({ sessions: list.map((s: any) => ({ id: s.id, title: s.title })) });
     } catch { /* ignore */ }
   },
 }));
