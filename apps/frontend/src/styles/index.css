@@ -1,3 +1,20 @@
+@import "tailwindcss";
+@source "../../node_modules/streamdown/dist/*.js";
+
+/* Tailwind 语义色彩 token — streamdown 依赖这些 */
+@theme {
+  --color-background: #1a1d23;
+  --color-foreground: #e0e2e6;
+  --color-muted: #262a33;
+  --color-muted-foreground: #8b8f98;
+  --color-border: #333842;
+  --color-primary: #2563eb;
+  --color-accent: #4fc3f7;
+  --color-warning: #ff9800;
+  --color-destructive: #f44336;
+  --color-success: #4caf50;
+}
+
 :root {
   --bg: #1a1d23;
   --surface: #262a33;
@@ -11,12 +28,6 @@
   --error: #f44336;
   --success: #4caf50;
   --radius: 12px;
-}
-
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
 }
 
 body {
